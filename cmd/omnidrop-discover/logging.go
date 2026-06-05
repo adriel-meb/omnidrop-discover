@@ -31,8 +31,6 @@ func newLogger(jsonOutput, verbose bool) *slog.Logger {
 
 // ─── Modern handler ───────────────────────────────────────────────────────────
 
-// modernHandler is a custom slog.Handler that produces compact, colorized,
-// human-readable log output.
 type modernHandler struct {
 	mu     sync.Mutex
 	w      io.Writer
@@ -53,18 +51,10 @@ func (h *modernHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	icon, label := levelStyle(r.Level)
-	ts := r.Time.Format("15:04:05")
+	ts := dim(r.Time.Format("15:04:05"))
+	badge, msgColor := levelBadge(r.Level)
 
-	var parts []string
-	parts = append(parts, dim(ts))
-	parts = append(parts, icon)
-	parts = append(parts, label)
-
-	if msg := r.Message; msg != "" {
-		parts = append(parts, msg)
-	}
-
+	// Collect attrs.
 	attrs := make([]slog.Attr, 0, r.NumAttrs())
 	r.Attrs(func(a slog.Attr) bool {
 		attrs = append(attrs, a)
@@ -72,14 +62,16 @@ func (h *modernHandler) Handle(_ context.Context, r slog.Record) error {
 	})
 	attrs = append(attrs, h.attrs...)
 
+	// Render:  timestamp │ badge  message  · attr  · attr …
+	var parts []string
+	parts = append(parts, ts, "│", badge)
+
+	if msg := r.Message; msg != "" {
+		parts = append(parts, msgColor+msg+"\033[0m")
+	}
+
 	for _, a := range attrs {
-		if a.Value.Kind() == slog.KindGroup {
-			for _, ga := range a.Value.Group() {
-				parts = append(parts, fmt.Sprintf("  %s=%s", a.Key+"."+ga.Key, formatValue(ga.Value)))
-			}
-		} else {
-			parts = append(parts, fmt.Sprintf("  %s=%s", a.Key, formatValue(a.Value)))
-		}
+		parts = append(parts, attrFmt(a))
 	}
 
 	fmt.Fprintln(h.w, strings.Join(parts, " "))
@@ -107,19 +99,51 @@ func (h *modernHandler) clone() *modernHandler {
 	}
 }
 
-// ─── Level styles ─────────────────────────────────────────────────────────────
+// ─── Attribute formatter ──────────────────────────────────────────────────────
 
-func levelStyle(l slog.Level) (icon, label string) {
+func attrFmt(a slog.Attr) string {
+	if a.Value.Kind() == slog.KindGroup {
+		var segs []string
+		for _, ga := range a.Value.Group() {
+			segs = append(segs, fmt.Sprintf("%s%s%s%s",
+				dim(a.Key+"."+ga.Key), dim("="), "", formatValue(ga.Value)))
+		}
+		return strings.Join(segs, " ")
+	}
+	return fmt.Sprintf(" %s %s%s%s",
+		dim("·"),
+		dim(a.Key+"="),
+		"",
+		formatValue(a.Value),
+	)
+}
+
+// ─── Level badges ─────────────────────────────────────────────────────────────
+
+func levelBadge(l slog.Level) (badge, msgColor string) {
 	switch {
 	case l < slog.LevelInfo:
-		return cyan("◷"), cyan("debug")
+		return debugBadge(), "\033[36m"
 	case l < slog.LevelWarn:
-		return green("●"), green("done")
+		return doneBadge(), "\033[32m"
 	case l < slog.LevelError:
-		return yellow("▲"), yellow("warn")
+		return warnBadge(), "\033[33m"
 	default:
-		return red("✗"), red("fail")
+		return failBadge(), "\033[31m"
 	}
+}
+
+func doneBadge() string {
+	return "\033[42m\033[30m DONE \033[0m"
+}
+func warnBadge() string {
+	return "\033[43m\033[30m WARN \033[0m"
+}
+func failBadge() string {
+	return "\033[41m\033[97m FAIL \033[0m"
+}
+func debugBadge() string {
+	return "\033[46m\033[30m DEBUG \033[0m"
 }
 
 // ─── Value formatters ─────────────────────────────────────────────────────────
@@ -152,8 +176,6 @@ func formatValue(v slog.Value) string {
 
 // ─── ANSI helpers ─────────────────────────────────────────────────────────────
 
-func red(s string) string     { return "\033[31m" + s + "\033[0m" }
-func green(s string) string   { return "\033[32m" + s + "\033[0m" }
-func yellow(s string) string  { return "\033[33m" + s + "\033[0m" }
-func cyan(s string) string    { return "\033[36m" + s + "\033[0m" }
-func dim(s string) string     { return "\033[2m" + s + "\033[0m" }
+func dim(s string) string   { return "\033[2m" + s + "\033[0m" }
+func bold(s string) string  { return "\033[1m" + s + "\033[0m" }
+func green(s string) string { return "\033[32m" + s + "\033[0m" }

@@ -120,14 +120,15 @@ func splitComma(s string) []string {
 
 // ─── Peer results table ───────────────────────────────────────────────────────
 
-// PrintPeersTable prints discovered peers as a modern box-drawn table to stderr.
+// PrintPeersTable prints discovered peers as a modern, colorful box-drawn table
+// to stderr.
 func PrintPeersTable(peers []Peer) {
 	if len(peers) == 0 {
-		fmt.Fprintln(os.Stderr, yellow("  ◎  no peers found"))
+		fmt.Fprintln(os.Stderr, "\033[33m  ◎  no peers found\033[0m")
 		return
 	}
 
-	// Build rows.
+	// ─── Build rows ──────────────────────────────────────────────────────
 	headers := []string{"INSTANCE", "IPV4", "PORT", "PLATFORM", "VERSION"}
 	rows := make([][]string, len(peers))
 	for i, p := range peers {
@@ -144,7 +145,7 @@ func PrintPeersTable(peers []Peer) {
 		}
 	}
 
-	// Compute column widths.
+	// ─── Column widths ───────────────────────────────────────────────────
 	colWidths := make([]int, len(headers))
 	for i, h := range headers {
 		colWidths[i] = len(h)
@@ -156,14 +157,12 @@ func PrintPeersTable(peers []Peer) {
 			}
 		}
 	}
-
-	// Padded widths: 2 spaces per column.
 	padded := make([]int, len(colWidths))
 	for i, w := range colWidths {
 		padded[i] = w + 2
 	}
 
-	// Separator line builder.
+	// ─── Separator builder ───────────────────────────────────────────────
 	hline := func(left, mid, right, fill string) string {
 		var b strings.Builder
 		b.WriteString(left)
@@ -179,33 +178,50 @@ func PrintPeersTable(peers []Peer) {
 
 	out := os.Stderr
 
-	// ┌─ top border
-	fmt.Fprintln(out, dim(hline("┌", "┬", "┐", "─")))
+	// ╭── Top border (rounded) ──────────────────────────────────────────
+	fmt.Fprintln(out, dim(hline("╭", "┬", "╮", "─")))
 
-	// │  header row (bold cyan)
-	fmt.Fprint(out, "│")
+	// │  Header row — bold white on subtle background
+	headerBg := "\033[48;5;236m\033[97m"
+	headerReset := "\033[0m"
+	fmt.Fprint(out, headerBg+" │"+headerReset)
 	for i, h := range headers {
-		fmt.Fprintf(out, " %s%s%s │",
-			boldCyan, padRight(h, colWidths[i]), resetANSI,
+		fmt.Fprintf(out, "%s %s%s%s │",
+			headerBg, boldWhite, padRight(h, colWidths[i]), headerReset,
 		)
 	}
 	fmt.Fprintln(out)
 
-	// ├─ header separator
+	// ├── Header separator
 	fmt.Fprintln(out, dim(hline("├", "┼", "┤", "─")))
 
-	// │  data rows
-	for _, row := range rows {
-		fmt.Fprint(out, "│")
+	// │  Data rows — alternating subtle background shades
+	for idx, row := range rows {
+		// Alternating row backgrounds: dark grey for odd, slightly lighter for even
+		rowBg := "\033[48;5;235m"
+		if idx%2 == 0 {
+			rowBg = "\033[48;5;237m"
+		}
+		fmt.Fprint(out, rowBg+" │"+resetANSI)
 		for i, cell := range row {
-			fmt.Fprintf(out, " %s │", padRight(cell, colWidths[i]))
+			colored := tableColor(i, padRight(cell, colWidths[i]))
+			fmt.Fprintf(out, " %s │", rowBg+colored+resetANSI)
 		}
 		fmt.Fprintln(out)
 	}
 
-	// └─ bottom border
-	fmt.Fprintln(out, dim(hline("└", "┴", "┘", "─")))
+	// ╰── Bottom border (rounded)
+	fmt.Fprintln(out, dim(hline("╰", "┴", "╯", "─")))
+
+	// ─── Footer summary line ────────────────────────────────────────────
+	noun := "peer"
+	if len(peers) != 1 {
+		noun = "peers"
+	}
+	fmt.Fprintf(out, "  \033[2m%s %d %s discovered\033[0m\n", "◆", len(peers), noun)
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 func padRight(s string, n int) string {
 	return s + strings.Repeat(" ", n-len(s))
@@ -222,9 +238,27 @@ func truncate(s string, n int) string {
 // ─── ANSI helpers ─────────────────────────────────────────────────────────────
 
 const (
-	boldCyan = "\033[1;36m"
+	boldWhite = "\033[1;97m"
 	resetANSI = "\033[0m"
 )
 
-func yellow(s string) string  { return "\033[33m" + s + resetANSI }
-func dim(s string) string     { return "\033[2m" + s + resetANSI }
+func dim(s string) string  { return "\033[2m" + s + "\033[0m" }
+func yellow(s string) string { return "\033[33m" + s + "\033[0m" }
+
+// tableColor returns a color-wrapped cell value for the given column index.
+func tableColor(col int, s string) string {
+	switch col {
+	case 0:
+		return "\033[1;97m" + s + "\033[0m" // instance — bright white bold
+	case 1:
+		return "\033[38;5;83m" + s + "\033[0m" // IP — bright green (256-color)
+	case 2:
+		return "\033[38;5;221m" + s + "\033[0m" // port — warm yellow
+	case 3:
+		return "\033[38;5;117m" + s + "\033[0m" // platform — soft cyan
+	case 4:
+		return "\033[38;5;219m" + s + "\033[0m" // version — soft magenta
+	default:
+		return s
+	}
+}
