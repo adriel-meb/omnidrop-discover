@@ -35,7 +35,6 @@ func main() {
 
 	// ---- Mode validation ----
 
-	// Count how many operational flags are set. Exactly one is required.
 	modeCount := 0
 	if *serve {
 		modeCount++
@@ -55,7 +54,6 @@ func main() {
 
 	// ---- Signal handling ----
 
-	// Create a context that is cancelled on SIGINT (Ctrl+C) or SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer stop()

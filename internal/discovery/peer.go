@@ -2,7 +2,9 @@ package discovery
 
 import (
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/grandcat/zeroconf"
@@ -79,7 +81,6 @@ func entryToPeer(e *zeroconf.ServiceEntry) Peer {
 // into the corresponding Peer fields. Unknown keys are silently ignored.
 func parseTXT(p *Peer) {
 	for _, kv := range p.TXT {
-		// Find the first '=' separator. If there is none, skip this entry.
 		eq := -1
 		for i := 0; i < len(kv); i++ {
 			if kv[i] == '=' {
@@ -102,8 +103,7 @@ func parseTXT(p *Peer) {
 	}
 }
 
-// splitComma splits s on ',' and returns non-empty segments. It avoids
-// allocating strings.Split's empty-string tail for trailing commas.
+// splitComma splits s on ',' and returns non-empty segments.
 func splitComma(s string) []string {
 	var out []string
 	start := 0
@@ -118,20 +118,113 @@ func splitComma(s string) []string {
 	return out
 }
 
-// PrintPeersTable prints a human-readable table of peers to stdout.
+// ─── Peer results table ───────────────────────────────────────────────────────
+
+// PrintPeersTable prints discovered peers as a modern box-drawn table to stderr.
 func PrintPeersTable(peers []Peer) {
 	if len(peers) == 0 {
-		fmt.Println("no peers found")
+		fmt.Fprintln(os.Stderr, yellow("  ◎  no peers found"))
 		return
 	}
-	fmt.Printf("%-25s %-20s %-6s %-10s %-10s\n",
-		"INSTANCE", "IPV4", "PORT", "PLATFORM", "VERSION")
-	for _, p := range peers {
+
+	// Build rows.
+	headers := []string{"INSTANCE", "IPV4", "PORT", "PLATFORM", "VERSION"}
+	rows := make([][]string, len(peers))
+	for i, p := range peers {
 		ipv4 := ""
 		if len(p.IPv4) > 0 {
 			ipv4 = p.IPv4[0]
 		}
-		fmt.Printf("%-25s %-20s %-6d %-10s %-10s\n",
-			p.Instance, ipv4, p.Port, p.Platform, p.Version)
+		rows[i] = []string{
+			truncate(p.Instance, 36),
+			ipv4,
+			fmt.Sprintf("%d", p.Port),
+			p.Platform,
+			p.Version,
+		}
 	}
+
+	// Compute column widths.
+	colWidths := make([]int, len(headers))
+	for i, h := range headers {
+		colWidths[i] = len(h)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if len(cell) > colWidths[i] {
+				colWidths[i] = len(cell)
+			}
+		}
+	}
+
+	// Padded widths: 2 spaces per column.
+	padded := make([]int, len(colWidths))
+	for i, w := range colWidths {
+		padded[i] = w + 2
+	}
+
+	// Separator line builder.
+	hline := func(left, mid, right, fill string) string {
+		var b strings.Builder
+		b.WriteString(left)
+		for i, w := range padded {
+			if i > 0 {
+				b.WriteString(mid)
+			}
+			b.WriteString(strings.Repeat(fill, w))
+		}
+		b.WriteString(right)
+		return b.String()
+	}
+
+	out := os.Stderr
+
+	// ┌─ top border
+	fmt.Fprintln(out, dim(hline("┌", "┬", "┐", "─")))
+
+	// │  header row (bold cyan)
+	fmt.Fprint(out, "│")
+	for i, h := range headers {
+		fmt.Fprintf(out, " %s%s%s │",
+			boldCyan, padRight(h, colWidths[i]), resetANSI,
+		)
+	}
+	fmt.Fprintln(out)
+
+	// ├─ header separator
+	fmt.Fprintln(out, dim(hline("├", "┼", "┤", "─")))
+
+	// │  data rows
+	for _, row := range rows {
+		fmt.Fprint(out, "│")
+		for i, cell := range row {
+			fmt.Fprintf(out, " %s │", padRight(cell, colWidths[i]))
+		}
+		fmt.Fprintln(out)
+	}
+
+	// └─ bottom border
+	fmt.Fprintln(out, dim(hline("└", "┴", "┘", "─")))
 }
+
+func padRight(s string, n int) string {
+	return s + strings.Repeat(" ", n-len(s))
+}
+
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n-1]) + "…"
+}
+
+// ─── ANSI helpers ─────────────────────────────────────────────────────────────
+
+const (
+	boldCyan = "\033[1;36m"
+	resetANSI = "\033[0m"
+)
+
+func yellow(s string) string  { return "\033[33m" + s + resetANSI }
+func dim(s string) string     { return "\033[2m" + s + resetANSI }
