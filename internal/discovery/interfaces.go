@@ -13,13 +13,19 @@ import (
 // and support multicast — the ones suitable for LAN mDNS discovery.
 //
 // Uses a tiered approach to handle restricted environments (Android/Termux):
-//  1. net.Interfaces()    — netlink, works on desktop
-//  2. ifconfig (exec)     — ioctl-based, works on Android when netlink is blocked
+//  1. net.Interfaces()          — netlink, works on desktop
+//  2. ifconfig (exec)           — ioctl-based, works on many Android devices
+//  3. InterfaceByName (ioctl)   — hardcoded names as last resort
 func UsableInterfaces() ([]net.Interface, error) {
 	all, err := net.Interfaces()
 	if err != nil {
 		slog.Debug("net.Interfaces() failed, trying ifconfig fallback", "err", err)
 		all = ifconfigInterfaces()
+	}
+
+	if len(all) == 0 {
+		slog.Debug("ifconfig returned nothing, trying InterfaceByName fallback")
+		all = namedInterfaceFallback()
 	}
 
 	var out []net.Interface
@@ -41,15 +47,35 @@ func UsableInterfaces() ([]net.Interface, error) {
 	return out, nil
 }
 
-// ifconfigInterfaces runs "ifconfig" (without -a, which toybox may not support)
-// and parses its output to build net.Interface values.
+// namedInterfaceFallback tries common Wi-Fi interface names directly via
+// net.InterfaceByName(), which uses ioctl (not netlink) and may be allowed
+// when net.Interfaces() and ifconfig are both blocked on Android.
+func namedInterfaceFallback() []net.Interface {
+	var candidates = []string{"wlan0", "wlan1", "eth0", "wifi0"}
+	var out []net.Interface
+	for _, name := range candidates {
+		iface, err := net.InterfaceByName(name)
+		if err != nil {
+			slog.Debug("InterfaceByName", "name", name, "err", err)
+			continue
+		}
+		slog.Debug("found interface via InterfaceByName",
+			"name", iface.Name,
+			"flags", fmt.Sprintf("0x%x", iface.Flags),
+		)
+		out = append(out, *iface)
+	}
+	return out
+}
+
+// ifconfigInterfaces runs "ifconfig" and parses its output to build
+// net.Interface values.
 func ifconfigInterfaces() []net.Interface {
 	// Try without -a first (toybox/busybox on Android may not support it).
 	cmd := exec.Command("ifconfig")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Debug("ifconfig failed", "err", err)
-		// Try with -a as a fallback (standard Linux ifconfig).
 		cmd2 := exec.Command("ifconfig", "-a")
 		output2, err2 := cmd2.Output()
 		if err2 != nil {
@@ -60,7 +86,6 @@ func ifconfigInterfaces() []net.Interface {
 	}
 
 	slog.Debug("ifconfig output", "raw", string(output))
-
 	return parseIfconfig(string(output))
 }
 
@@ -89,7 +114,6 @@ func parseIfconfig(output string) []net.Interface {
 
 		// Extract decimal flags value.
 		rest = strings.TrimPrefix(rest, "flags=")
-		// Flags value is either "4163<UP,...>" or "4163 " (if no angle brackets on some platforms)
 		end := strings.IndexAny(rest, "< ")
 		if end == -1 {
 			slog.Debug("cannot parse flags for interface", "name", name, "rest", rest)
