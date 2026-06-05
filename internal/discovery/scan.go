@@ -99,24 +99,26 @@ func RunScan(ctx context.Context, timeout time.Duration, asJSON bool) error {
 // an omnidrop banner on the default port (9000). Uses concurrent workers
 // for speed.
 func scanSubnet(ctx context.Context, iface net.Interface, perHostTimeout time.Duration) []Peer {
+	// Try iface.Addrs() first (works on desktop). On Android this uses
+	// netlink which is often blocked, so fall back to parsing the cached
+	// ifconfig output for the IP and netmask.
 	addrs, err := iface.Addrs()
-	if err != nil {
-		slog.Warn("cannot get interface addresses", "name", iface.Name, "err", err)
-		return nil
-	}
-
-	// Find the first IPv4 address on the interface to determine the subnet.
 	var subnet *net.IPNet
-	for _, a := range addrs {
-		if ipnet, ok := a.(*net.IPNet); ok {
-			if ipnet.IP.To4() != nil {
-				subnet = ipnet
-				break
+	if err == nil {
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok {
+				if ipnet.IP.To4() != nil {
+					subnet = ipnet
+					break
+				}
 			}
 		}
 	}
 	if subnet == nil {
-		slog.Warn("no IPv4 address found on interface", "name", iface.Name)
+		subnet = InterfaceAddr(iface.Name)
+	}
+	if subnet == nil {
+		slog.Warn("cannot determine subnet for interface", "name", iface.Name)
 		return nil
 	}
 

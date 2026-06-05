@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"net"
@@ -18,6 +19,11 @@ const (
 	kernelIffMulticast = 0x1000
 	kernelIffRunning   = 0x40
 )
+
+// cachedIfconfigOutput holds the raw output of the last ifconfig run, so
+// that scanSubnet (and other callers) can extract IP addresses without
+// calling iface.Addrs(), which uses netlink and may be blocked on Android.
+var cachedIfconfigOutput string
 
 // kernelFlagsToGo converts Linux kernel interface flags (as shown by ifconfig)
 // to Go's net.Flags bitmask. The kernel and Go use different bit positions.
@@ -101,9 +107,8 @@ func namedInterfaceFallback() []net.Interface {
 }
 
 // ifconfigInterfaces runs "ifconfig" and parses its output to build
-// net.Interface values.
+// net.Interface values. Caches the raw output for later use.
 func ifconfigInterfaces() []net.Interface {
-	// Try without -a first (toybox/busybox on Android may not support it).
 	cmd := exec.Command("ifconfig")
 	output, err := cmd.Output()
 	if err != nil {
@@ -117,8 +122,10 @@ func ifconfigInterfaces() []net.Interface {
 		output = output2
 	}
 
-	slog.Debug("ifconfig output", "raw", string(output))
-	return parseIfconfig(string(output))
+	raw := string(output)
+	cachedIfconfigOutput = raw
+	slog.Debug("ifconfig output", "raw", raw)
+	return parseIfconfig(raw)
 }
 
 // parseIfconfig parses the output of ifconfig into net.Interface values.
@@ -189,11 +196,60 @@ func parseIfconfig(output string) []net.Interface {
 	return out
 }
 
+// InterfaceAddr returns the IPv4 address and netmask for the given interface
+// by parsing the cached ifconfig output. This avoids calling iface.Addrs()
+// which uses netlink and may fail on restricted platforms like Android.
+func InterfaceAddr(name string) *net.IPNet {
+	if cachedIfconfigOutput == "" {
+		return nil
+	}
+	scanner := bufio.NewScanner(strings.NewReader(cachedIfconfigOutput))
+	var currentIface string
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Check for interface header line.
+		if colonIdx := strings.Index(line, ":"); colonIdx >= 0 {
+			candidate := strings.TrimSpace(line[:colonIdx])
+			rest := strings.TrimSpace(line[colonIdx+1:])
+			if strings.HasPrefix(rest, "flags=") {
+				currentIface = candidate
+				continue
+			}
+		}
+		// Look for "inet a.b.c.d  netmask w.x.y.z" under the current interface.
+		if currentIface != name {
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "inet ") {
+			continue
+		}
+		// Parse: "inet 192.168.1.66  netmask 255.255.255.0  broadcast 192.168.1.255"
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[0] != "inet" {
+			continue
+		}
+		ip := net.ParseIP(fields[1])
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		mask := net.IPMask(net.ParseIP(fields[3]).To4())
+		if mask == nil {
+			continue
+		}
+		return &net.IPNet{IP: ip, Mask: mask}
+	}
+	return nil
+}
+
 // DescribeInterface returns a human-readable summary like
 // "en0 [192.168.1.20, fe80::1]".
 func DescribeInterface(iface net.Interface) string {
 	addrs, err := iface.Addrs()
 	if err != nil {
+		if ipnet := InterfaceAddr(iface.Name); ipnet != nil {
+			return fmt.Sprintf("%s [%s]", iface.Name, ipnet.IP.String())
+		}
 		return fmt.Sprintf("%s [error: %v]", iface.Name, err)
 	}
 
