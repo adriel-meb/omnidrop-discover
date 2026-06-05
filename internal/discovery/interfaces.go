@@ -9,6 +9,38 @@ import (
 	"strings"
 )
 
+// Kernel-level interface flags (from <linux/if.h>). These differ from Go's
+// net.Flags constants — see kernelFlagsToGo() for the mapping.
+const (
+	kernelIffUp        = 0x1
+	kernelIffBroadcast = 0x2
+	kernelIffLoopback  = 0x8
+	kernelIffMulticast = 0x1000
+	kernelIffRunning   = 0x40
+)
+
+// kernelFlagsToGo converts Linux kernel interface flags (as shown by ifconfig)
+// to Go's net.Flags bitmask. The kernel and Go use different bit positions.
+func kernelFlagsToGo(kflags uint64) net.Flags {
+	var gflags net.Flags
+	if kflags&kernelIffUp != 0 {
+		gflags |= net.FlagUp
+	}
+	if kflags&kernelIffBroadcast != 0 {
+		gflags |= net.FlagBroadcast
+	}
+	if kflags&kernelIffLoopback != 0 {
+		gflags |= net.FlagLoopback
+	}
+	if kflags&kernelIffMulticast != 0 {
+		gflags |= net.FlagMulticast
+	}
+	if kflags&kernelIffRunning != 0 {
+		gflags |= net.FlagRunning
+	}
+	return gflags
+}
+
 // UsableInterfaces returns network interfaces that are up, not loopback,
 // and support multicast — the ones suitable for LAN mDNS discovery.
 //
@@ -39,7 +71,7 @@ func UsableInterfaces() ([]net.Interface, error) {
 			continue
 		}
 		if iface.Flags&net.FlagMulticast == 0 {
-			slog.Debug("skipping (no multicast)", "name", iface.Name)
+			slog.Debug("skipping (no multicast)", "name", iface.Name, "flags", fmt.Sprintf("0x%x", int(iface.Flags)))
 			continue
 		}
 		out = append(out, iface)
@@ -61,7 +93,7 @@ func namedInterfaceFallback() []net.Interface {
 		}
 		slog.Debug("found interface via InterfaceByName",
 			"name", iface.Name,
-			"flags", fmt.Sprintf("0x%x", iface.Flags),
+			"flags", fmt.Sprintf("0x%x", int(iface.Flags)),
 		)
 		out = append(out, *iface)
 	}
@@ -90,6 +122,7 @@ func ifconfigInterfaces() []net.Interface {
 }
 
 // parseIfconfig parses the output of ifconfig into net.Interface values.
+// Converts kernel-level flags to Go's net.Flags numbering.
 func parseIfconfig(output string) []net.Interface {
 	lines := strings.Split(output, "\n")
 
@@ -120,7 +153,7 @@ func parseIfconfig(output string) []net.Interface {
 			continue
 		}
 		flagsStr := rest[:end]
-		flagsInt, err := strconv.ParseUint(flagsStr, 10, 32)
+		kflags, err := strconv.ParseUint(flagsStr, 10, 32)
 		if err != nil {
 			slog.Debug("parsing flags", "name", name, "val", flagsStr, "err", err)
 			continue
@@ -136,10 +169,13 @@ func parseIfconfig(output string) []net.Interface {
 			}
 		}
 
+		// Convert kernel flags to Go's net.Flags numbering.
+		gflags := kernelFlagsToGo(kflags)
+
 		slog.Debug("found interface",
 			"name", name,
-			"flags_dec", flagsInt,
-			"flags_hex", fmt.Sprintf("0x%x", flagsInt),
+			"kernel_flags", fmt.Sprintf("0x%x", kflags),
+			"go_flags", fmt.Sprintf("0x%x", int(gflags)),
 			"mtu", mtu,
 		)
 
@@ -147,7 +183,7 @@ func parseIfconfig(output string) []net.Interface {
 			Index: len(out) + 1,
 			MTU:   mtu,
 			Name:  name,
-			Flags: net.Flags(flagsInt),
+			Flags: gflags,
 		})
 	}
 	return out
