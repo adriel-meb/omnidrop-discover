@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"time"
 
@@ -16,28 +15,16 @@ import (
 // It listens for responses until the timeout expires, then prints the
 // discovered peers (as a table or JSON) and returns.
 func RunScan(ctx context.Context, timeout time.Duration, asJSON bool) error {
-	// Enumerate suitable interfaces ourselves so we can log them and fall
-	// back gracefully on platforms where net.Interfaces() doesn't report
-	// FlagMulticast (e.g. Android/Termux).
+	// Enumerate suitable interfaces. On platforms where net.Interfaces() is
+	// restricted (e.g. Android/Termux), UsableInterfaces falls back to
+	// reading /sys/class/net/.
 	ifaces, err := UsableInterfaces()
 	if err != nil {
-		slog.Warn("enumerating interfaces", "err", err)
+		return fmt.Errorf("listing interfaces: %w", err)
 	}
 	if len(ifaces) == 0 {
-		slog.Warn("no multicast-capable interfaces found, trying all up interfaces")
-		all, listErr := net.Interfaces()
-		if listErr != nil {
-			return fmt.Errorf("listing interfaces: %w", listErr)
-		}
-		for _, iface := range all {
-			if iface.Flags&net.FlagUp == 0 {
-				continue
-			}
-			if iface.Flags&net.FlagLoopback != 0 {
-				continue
-			}
-			ifaces = append(ifaces, iface)
-		}
+		slog.Warn("no usable interfaces found for mDNS scan")
+		return nil
 	}
 
 	for _, iface := range ifaces {

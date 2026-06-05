@@ -2,16 +2,24 @@ package discovery
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // UsableInterfaces returns network interfaces that are up, not loopback,
 // and support multicast — the ones suitable for LAN mDNS discovery.
+//
+// On platforms where net.Interfaces() is restricted (e.g. Android/Termux),
+// it falls back to reading /sys/class/net/ instead.
 func UsableInterfaces() ([]net.Interface, error) {
 	all, err := net.Interfaces()
 	if err != nil {
-		return nil, fmt.Errorf("listing interfaces: %w", err)
+		slog.Debug("net.Interfaces() failed, trying sysfs fallback", "err", err)
+		all = sysfsInterfaces()
 	}
 
 	var out []net.Interface
@@ -28,6 +36,74 @@ func UsableInterfaces() ([]net.Interface, error) {
 		out = append(out, iface)
 	}
 	return out, nil
+}
+
+// sysfsInterfaces reads network interface information from /sys/class/net/,
+// which is typically accessible even when netlink-based net.Interfaces() is
+// blocked (e.g. Android/Termux).
+func sysfsInterfaces() []net.Interface {
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		slog.Warn("sysfs fallback failed", "err", err)
+		return nil
+	}
+
+	var out []net.Interface
+	for _, entry := range entries {
+		name := entry.Name()
+		iface := readSysfsIface(name)
+		if iface != nil {
+			out = append(out, *iface)
+		}
+	}
+	return out
+}
+
+// readSysfsIface reads a single interface from /sys/class/net/<name>/.
+// Returns nil if the interface directory doesn't contain the expected files.
+func readSysfsIface(name string) *net.Interface {
+	base := filepath.Join("/sys/class/net", name)
+
+	flags, err := readSysfsHex(filepath.Join(base, "flags"))
+	if err != nil {
+		slog.Debug("skipping interface (no flags)", "name", name, "err", err)
+		return nil
+	}
+
+	mtu, err := readSysfsInt(filepath.Join(base, "mtu"))
+	if err != nil {
+		mtu = 0 // non-fatal
+	}
+
+	// /sys/class/net/<name>/ifindex
+	index := 0
+	if indexData, err := os.ReadFile(filepath.Join(base, "ifindex")); err == nil {
+		index, _ = strconv.Atoi(strings.TrimSpace(string(indexData)))
+	}
+
+	return &net.Interface{
+		Index:        index,
+		MTU:          mtu,
+		Name:         name,
+		Flags:        net.Flags(flags),
+		HardwareAddr: nil, // not needed for our filtering
+	}
+}
+
+func readSysfsHex(path string) (uint64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(strings.TrimSpace(string(data)), 0, 64)
+}
+
+func readSysfsInt(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
 // DescribeInterface returns a human-readable summary like
