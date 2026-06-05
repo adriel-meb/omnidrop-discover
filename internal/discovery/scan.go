@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"time"
 
@@ -15,23 +16,47 @@ import (
 // It listens for responses until the timeout expires, then prints the
 // discovered peers (as a table or JSON) and returns.
 func RunScan(ctx context.Context, timeout time.Duration, asJSON bool) error {
-	// Create a zeroconf resolver that listens on all multicast-capable
-	// interfaces for both IPv4 and IPv6 mDNS traffic.
-	resolver, err := zeroconf.NewResolver(nil)
+	// Enumerate suitable interfaces ourselves so we can log them and fall
+	// back gracefully on platforms where net.Interfaces() doesn't report
+	// FlagMulticast (e.g. Android/Termux).
+	ifaces, err := UsableInterfaces()
+	if err != nil {
+		slog.Warn("enumerating interfaces", "err", err)
+	}
+	if len(ifaces) == 0 {
+		slog.Warn("no multicast-capable interfaces found, trying all up interfaces")
+		all, listErr := net.Interfaces()
+		if listErr != nil {
+			return fmt.Errorf("listing interfaces: %w", listErr)
+		}
+		for _, iface := range all {
+			if iface.Flags&net.FlagUp == 0 {
+				continue
+			}
+			if iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			ifaces = append(ifaces, iface)
+		}
+	}
+
+	for _, iface := range ifaces {
+		slog.Debug("using interface", "name", iface.Name, "flags", iface.Flags)
+	}
+
+	// Create a zeroconf resolver on the selected interfaces.
+	resolver, err := zeroconf.NewResolver(
+		zeroconf.SelectIfaces(ifaces),
+		zeroconf.SelectIPTraffic(zeroconf.IPv4),
+	)
 	if err != nil {
 		return fmt.Errorf("creating resolver: %w", err)
 	}
 
 	store := newPeerStore()
-	// entries is an unbuffered channel. The zeroconf library's mainloop
-	// sends discovered ServiceEntry values here, and our goroutine below
-	// converts them to Peer structs.
 	entries := make(chan *zeroconf.ServiceEntry)
 	done := make(chan struct{})
 
-	// Background goroutine that drains the entries channel and populates
-	// the peerStore. Runs until entries is closed by the library (which
-	// happens when the browse context is cancelled).
 	go func() {
 		defer close(done)
 		for entry := range entries {
@@ -51,9 +76,6 @@ func RunScan(ctx context.Context, timeout time.Duration, asJSON bool) error {
 		}
 	}()
 
-	// Create a derived context with the desired scan timeout. When it
-	// expires, Browse's mainloop will be cancelled and the entries
-	// channel will be closed.
 	browseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -61,9 +83,7 @@ func RunScan(ctx context.Context, timeout time.Duration, asJSON bool) error {
 		return fmt.Errorf("browsing: %w", err)
 	}
 
-	// Wait for the timeout to expire.
 	<-browseCtx.Done()
-	// Wait for the consumer goroutine to finish processing remaining entries.
 	<-done
 
 	peers := store.snapshot()
