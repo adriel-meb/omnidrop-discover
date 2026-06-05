@@ -177,5 +177,3 @@ func formatValue(v slog.Value) string {
 // ─── ANSI helpers ─────────────────────────────────────────────────────────────
 
 func dim(s string) string   { return "\033[2m" + s + "\033[0m" }
-func bold(s string) string  { return "\033[1m" + s + "\033[0m" }
-func green(s string) string { return "\033[32m" + s + "\033[0m" }

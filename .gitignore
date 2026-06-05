@@ -1,1 +1,19 @@
-omnidrop-discover
+# ─── Go ──────────────────────────────────────────────────────────────
+omnidrop-discover      # built binary (project root, same name as module)
+*.exe
+*.test
+*.out
+/tmp/
+
+# ─── IDE ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ─── macOS ───────────────────────────────────────────────────────────
+.DS_Store
+
+# ─── Dependencies ────────────────────────────────────────────────────
+/vendor/
